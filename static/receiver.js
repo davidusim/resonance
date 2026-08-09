@@ -7,9 +7,13 @@
   let socket = null;
   let reconnectTimer = null;
   let heartbeatTimer = null;
+  let reconnectAttempts = 0;
   let audioContext = null;
   let clockOffsetMs = 0;
+  const clockSamples = [];
   const activeSources = new Map();
+  const pendingAlertMessages = new Map();
+  const stoppedAlertIds = new Set();
 
   function readCredentials() {
     try { return JSON.parse(localStorage.getItem(CREDENTIAL_KEY)); }
@@ -41,16 +45,23 @@
   }
 
   async function syncClock() {
-    const samples = [];
     for (let index = 0; index < 5; index += 1) {
       const before = Date.now();
       const response = await fetch(`/api/time?sample=${index}`, { cache: "no-store" });
+      if (!response.ok) throw new Error(`Clock synchronization failed (${response.status})`);
       const payload = await response.json();
       const after = Date.now();
-      samples.push({ rtt: after - before, offset: payload.server_time_ms - ((before + after) / 2) });
+      recordClockSample(before, payload.server_time_ms, after);
     }
-    samples.sort((left, right) => left.rtt - right.rtt);
-    clockOffsetMs = samples[0].offset;
+  }
+
+  function recordClockSample(sentAtMs, serverTimeMs, receivedAtMs = Date.now()) {
+    if (![sentAtMs, serverTimeMs, receivedAtMs].every(Number.isFinite)) return;
+    const rtt = Math.max(0, receivedAtMs - sentAtMs);
+    clockSamples.push({ rtt, offset: serverTimeMs - ((sentAtMs + receivedAtMs) / 2) });
+    if (clockSamples.length > 20) clockSamples.shift();
+    const best = clockSamples.reduce((current, sample) => sample.rtt < current.rtt ? sample : current);
+    clockOffsetMs = best.offset;
   }
 
   function deviceHeaders() {
@@ -77,16 +88,22 @@
   }
 
   async function prepareAlert(message) {
+    if (stoppedAlertIds.has(message.alert_id)) {
+      sendAlertStatus(message.alert_id, "stopped", "Stop instruction already received");
+      return;
+    }
     if (activeSources.has(message.alert_id)) {
       sendAlertStatus(message.alert_id, "ready", "Alert was already scheduled");
       return;
     }
     if (!audioContext || audioContext.state !== "running") {
+      pendingAlertMessages.set(message.alert_id, message);
       byId("enable-audio").classList.remove("hidden");
       setStage("Audio needs a tap", "Enable audio now to receive this alert.", "alert");
       sendAlertStatus(message.alert_id, "error", "Audio context is not enabled");
       return;
     }
+    pendingAlertMessages.delete(message.alert_id);
     setStage("Preparing alert", `Verifying ${message.track.name}…`, "loading");
     try {
       const response = await fetch(message.track.url, { headers: deviceHeaders(), cache: "no-store" });
@@ -95,6 +112,11 @@
       const digest = await sha256(encoded);
       if (digest !== message.track.sha256) throw new Error("Audio integrity verification failed");
       const decoded = await audioContext.decodeAudioData(encoded.slice(0));
+      if (stoppedAlertIds.has(message.alert_id)) {
+        sendAlertStatus(message.alert_id, "stopped", "Stopped while preparing audio");
+        if (!activeSources.size) setStage("Standing by", "Stop signal received. The trusted channel remains connected.");
+        return;
+      }
       const source = audioContext.createBufferSource();
       const gain = audioContext.createGain();
       gain.gain.value = 1;
@@ -126,6 +148,9 @@
   }
 
   function stopAlert(alertId) {
+    stoppedAlertIds.add(alertId);
+    pendingAlertMessages.delete(alertId);
+    window.setTimeout(() => stoppedAlertIds.delete(alertId), 24 * 60 * 60 * 1000);
     const playback = activeSources.get(alertId);
     if (playback) {
       playback.stopped = true;
@@ -135,6 +160,14 @@
     }
     sendAlertStatus(alertId, "stopped");
     if (!activeSources.size) setStage("Standing by", "Stop signal received. The trusted channel remains connected.");
+  }
+
+  function scheduleReconnect() {
+    clearTimeout(reconnectTimer);
+    const baseDelay = Math.min(30000, 1000 * (2 ** Math.min(reconnectAttempts, 5)));
+    const jitter = Math.floor(Math.random() * 500);
+    reconnectAttempts += 1;
+    reconnectTimer = setTimeout(connect, baseDelay + jitter);
   }
 
   function connect() {
@@ -151,8 +184,11 @@
       }));
     });
     socket.addEventListener("message", (event) => {
-      const message = JSON.parse(event.data);
+      let message;
+      try { message = JSON.parse(event.data); }
+      catch { return; }
       if (message.type === "auth.ok") {
+        reconnectAttempts = 0;
         setPill("Connected", "online");
         setStage("Standing by", `Receiver “${credentials.name}” is connected.`);
         clearInterval(heartbeatTimer);
@@ -165,6 +201,12 @@
         prepareAlert(message);
       } else if (message.type === "alert.stop") {
         stopAlert(message.alert_id);
+      } else if (message.type === "pong") {
+        recordClockSample(
+          Number(message.client_time_ms),
+          Number(message.server_time_ms),
+          Date.now()
+        );
       }
     });
     socket.addEventListener("close", (event) => {
@@ -176,7 +218,7 @@
         return;
       }
       setPill("Reconnecting", "warning");
-      reconnectTimer = setTimeout(connect, 2500);
+      scheduleReconnect();
     });
     socket.addEventListener("error", () => setPill("Connection interrupted", "error"));
   }
@@ -227,6 +269,9 @@
     try {
       await unlockAudio();
       setStage("Standing by", "Audio is enabled and the trusted channel is connected.");
+      const waiting = [...pendingAlertMessages.values()];
+      pendingAlertMessages.clear();
+      for (const message of waiting) prepareAlert(message);
     } catch (error) {
       setStage("Audio unavailable", error.message, "alert");
     }
@@ -243,4 +288,8 @@
   });
 
   if (credentials?.device_id && credentials?.device_secret) startReceiver();
+
+  window.addEventListener("online", () => {
+    if (credentials && (!socket || socket.readyState === WebSocket.CLOSED)) connect();
+  });
 })();

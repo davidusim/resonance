@@ -9,10 +9,10 @@
 </head>
 <body>
   <main class="shell">
-    <nav class="topbar">
+    <div class="topbar">
       <div class="brand"><span class="mark" aria-hidden="true"></span> Resonance</div>
-      <span id="api-status" class="pill"><span class="dot"></span> Locked</span>
-    </nav>
+      <span id="api-status" class="pill" role="status" aria-live="polite"><span class="dot"></span> Locked</span>
+    </div>
 
     <header>
       <p class="eyebrow">Emergency audio coordinator</p>
@@ -31,7 +31,7 @@
           </div>
           <button class="primary" type="submit">Unlock dashboard</button>
         </form>
-        <div id="auth-message" class="message" role="status"></div>
+        <div id="auth-message" class="message" role="status" aria-live="polite"></div>
       </article>
 
       <article class="card">
@@ -46,7 +46,7 @@
         <p>Create a one-time code. It expires in ten minutes and can enroll exactly one device.</p>
         <button id="create-code" class="primary" type="button" disabled>Create enrollment code</button>
         <div id="enrollment-code" class="code hidden" aria-live="polite"></div>
-        <div id="enrollment-message" class="message" role="status"></div>
+        <div id="enrollment-message" class="message" role="status" aria-live="polite"></div>
       </article>
 
       <article class="card">
@@ -59,11 +59,11 @@
           </div>
           <button id="upload-button" class="primary" type="submit" disabled>Upload audio</button>
         </form>
-        <div id="upload-message" class="message" role="status"></div>
+        <div id="upload-message" class="message" role="status" aria-live="polite"></div>
       </article>
 
       <article class="card full">
-        <div class="row" style="justify-content:space-between">
+        <div class="row row--between">
           <div>
             <h2>Prepared audio</h2>
             <p>Playback starts at least five seconds after dispatch so receivers can buffer and align clocks.</p>
@@ -77,7 +77,7 @@
           <span class="pill"><span class="dot"></span> Completed <strong id="completed-count">0</strong></span>
           <span class="pill error"><span class="dot"></span> Errors <strong id="error-count">0</strong></span>
         </div>
-        <div id="alert-message" class="message" role="status"></div>
+        <div id="alert-message" class="message" role="status" aria-live="polite"></div>
       </article>
 
       <article class="card full">

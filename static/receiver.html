@@ -9,10 +9,10 @@
 </head>
 <body>
   <main class="shell receiver-shell">
-    <nav class="topbar">
+    <div class="topbar">
       <div class="brand">Resonance receiver</div>
-      <span id="connection-pill" class="pill"><span class="dot"></span> Not enrolled</span>
-    </nav>
+      <span id="connection-pill" class="pill" role="status" aria-live="polite"><span class="dot"></span> Not enrolled</span>
+    </div>
 
     <header class="receiver-hero">
       <span class="mark" aria-hidden="true"></span>
@@ -27,24 +27,24 @@
       <form id="enrollment-form" class="stack">
         <div class="field">
           <label for="device-name">Receiver name</label>
-          <input id="device-name" type="text" maxlength="80" placeholder="Lobby speaker tablet" required>
+          <input id="device-name" type="text" maxlength="80" placeholder="Lobby speaker tablet" autocomplete="off" required>
         </div>
         <div class="field">
           <label for="enrollment-code">One-time code</label>
-          <input id="enrollment-code" type="text" maxlength="32" placeholder="ABCDE-FGHIJ" autocapitalize="characters" required>
+          <input id="enrollment-code" type="text" maxlength="32" placeholder="ABCDE-FGHIJ" autocapitalize="characters" autocomplete="one-time-code" spellcheck="false" required>
         </div>
         <button class="primary" type="submit">Enroll and enable audio</button>
       </form>
-      <div id="enrollment-message" class="message" role="status"></div>
+      <div id="enrollment-message" class="message" role="status" aria-live="polite"></div>
     </section>
 
     <section id="receiver-card" class="card receiver-card hidden">
       <div id="status-stage" class="status-stage">
         <div>
-          <div class="status-ring"><strong id="status-symbol">✓</strong></div>
+            <div class="status-ring" aria-hidden="true"><strong id="status-symbol">✓</strong></div>
           <h2 id="status-heading">Standing by</h2>
           <p id="status-detail">Connected to the trusted emergency channel.</p>
-          <div class="row" style="justify-content:center">
+          <div class="row row--center">
             <button id="enable-audio" class="primary hidden" type="button">Enable audio</button>
             <button id="reset-device" class="secondary" type="button">Remove this receiver</button>
           </div>

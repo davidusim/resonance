@@ -1,3 +1,4 @@
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -50,15 +51,34 @@ def upload_track(client: TestClient) -> dict[str, object]:
 def test_health_and_security_headers(client: TestClient) -> None:
     response = client.get("/healthz")
 
-    assert response.json() == {"status": "ok"}
+    assert response.json() == {"status": "ok", "database": "ok"}
     assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["cross-origin-resource-policy"] == "same-origin"
+    assert response.headers["x-request-id"]
+    assert response.headers["server-timing"].startswith("app;dur=")
     assert "microphone=()" in response.headers["permissions-policy"]
 
 
 def test_admin_routes_require_bearer_token(client: TestClient) -> None:
-    assert client.get("/api/devices").status_code == 401
+    unauthenticated = client.get("/api/devices")
+    assert unauthenticated.status_code == 401
+    assert unauthenticated.headers["www-authenticate"] == "Bearer"
     assert client.get("/api/devices", headers={"Authorization": "Bearer wrong"}).status_code == 401
     assert client.get("/api/devices", headers=admin_headers()).status_code == 200
+
+
+def test_health_reports_database_failure(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unavailable() -> None:
+        raise sqlite3.OperationalError("database unavailable")
+
+    monkeypatch.setattr(client.app.state.db, "check_health", unavailable)
+
+    response = client.get("/healthz")
+
+    assert response.status_code == 503
+    assert response.json() == {"status": "unavailable", "database": "error"}
 
 
 def test_enrollment_code_is_single_use_and_secret_is_not_listed(client: TestClient) -> None:
@@ -178,6 +198,59 @@ def test_receiver_reconnecting_before_start_gets_pending_alert(client: TestClien
     assert replay["track"]["id"] == track["id"]
     status_payload = client.get("/api/status", headers=admin_headers()).json()
     assert status_payload["alerts"][0]["delivered_count"] == 1
+
+
+def test_receiver_reconnecting_gets_a_durable_stop(client: TestClient) -> None:
+    device = enroll(client)
+    track = upload_track(client)
+
+    with client.websocket_connect("/ws/receiver") as websocket:
+        websocket.send_json(
+            {
+                "type": "auth",
+                "device_id": device["device_id"],
+                "device_secret": device["device_secret"],
+            }
+        )
+        assert websocket.receive_json()["type"] == "auth.ok"
+        created = client.post(
+            "/api/alerts",
+            headers=admin_headers(),
+            json={"track_id": track["id"], "lead_ms": 3_000},
+        ).json()
+        assert websocket.receive_json()["type"] == "alert.prepare"
+
+    stopped = client.post(f"/api/alerts/{created['alert_id']}/stop", headers=admin_headers())
+    assert stopped.status_code == 200
+
+    with client.websocket_connect("/ws/receiver") as websocket:
+        websocket.send_json(
+            {
+                "type": "auth",
+                "device_id": device["device_id"],
+                "device_secret": device["device_secret"],
+            }
+        )
+        assert websocket.receive_json()["type"] == "auth.ok"
+        replay = websocket.receive_json()
+        websocket.send_json(
+            {
+                "type": "alert.status",
+                "alert_id": replay["alert_id"],
+                "status": "stopped",
+            }
+        )
+        websocket.send_json({"type": "ping", "client_time_ms": 1})
+        assert websocket.receive_json()["type"] == "pong"
+
+    assert replay == {
+        "type": "alert.stop",
+        "alert_id": created["alert_id"],
+        "sent_at_ms": replay["sent_at_ms"],
+        "replayed": True,
+    }
+    alert_status = client.get("/api/status", headers=admin_headers()).json()["alerts"][0]
+    assert alert_status["stopped_count"] == 1
 
 
 def test_receiver_cannot_acknowledge_an_undelivered_alert(client: TestClient) -> None:

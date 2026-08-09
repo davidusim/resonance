@@ -28,9 +28,12 @@ It is intentionally **not** a Bluetooth takeover tool. Bluetooth pairing, operat
 - WebSocket dispatch with a shared future start time and client clock-offset sampling
 - Per-receiver `ready`, `playing`, `completed`, `stopped`, and `error` receipts
 - Pending-alert replay when a receiver reconnects before the scheduled start
-- Synchronized stop signal
+- Durable stop replay, including stops received while audio is downloading or decoding
+- Concurrent, timeout-bounded fanout so a slow receiver does not delay healthy receivers
+- Continuous clock calibration from receiver heartbeat round trips
 - SQLite device, track, alert, and audit metadata
 - Responsive coordinator and receiver web interfaces
+- Database-aware health checks, request correlation, and critical-event logging
 - Security headers, upload size/type limits, no third-party browser assets
 
 ## Quick start
@@ -54,7 +57,8 @@ Run checks with:
 ```powershell
 ruff check .
 ruff format --check .
-pytest -q
+pytest -q -W error
+pip-audit --progress-spinner off
 ```
 
 ## Docker
@@ -68,6 +72,7 @@ docker run --rm -p 8080:8080 -v resonance-data:/data `
 ## Production checklist
 
 - Serve the app behind HTTPS. Modern browsers require a secure context for several media APIs, and device secrets must never travel over plaintext networks.
+- Run exactly one coordinator process and one replica. Receiver presence is in memory; multiple workers split the WebSocket fanout.
 - Put the coordinator on a trusted/private network where possible.
 - Use a strong admin token from a secret manager and restrict `/admin` at the reverse proxy or VPN.
 - Keep receiver devices powered, the page open, audio enabled, and the desired speaker paired and selected.
@@ -75,7 +80,7 @@ docker run --rm -p 8080:8080 -v resonance-data:/data `
 - Maintain a separate certified emergency notification path. Network loss, battery failure, browser suspension, Bluetooth interference, and device power management can all prevent playback.
 - Get organizational and participant approval before enrollment. Follow local emergency communications, accessibility, privacy, and radio regulations.
 
-See [SECURITY.md](SECURITY.md) for operational security guidance.
+See [the architecture](docs/ARCHITECTURE.md), [operations runbook](docs/OPERATIONS.md), and [SECURITY.md](SECURITY.md) for system boundaries, deployment, backup, rollback, and security guidance.
 
 ## Important platform limits
 

@@ -48,6 +48,10 @@ button {
 
 button:hover { filter: brightness(1.08); transform: translateY(-1px); }
 button:disabled { cursor: not-allowed; filter: grayscale(.5); opacity: .55; transform: none; }
+button:focus-visible, input:focus-visible {
+  outline: 3px solid var(--amber);
+  outline-offset: 3px;
+}
 
 .shell { width: min(1120px, calc(100% - 32px)); margin: 0 auto; padding: 28px 0 72px; }
 .receiver-shell { width: min(700px, calc(100% - 28px)); }
@@ -68,6 +72,8 @@ h1 { max-width: 780px; margin: 0; font-size: clamp(38px, 7vw, 72px); line-height
 .card p { color: var(--muted); line-height: 1.55; }
 .stack { display: grid; gap: 12px; }
 .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.row--between { justify-content: space-between; }
+.row--center { justify-content: center; }
 
 label { color: var(--muted); font-size: 13px; font-weight: 700; }
 input[type="text"], input[type="password"], input[type="number"], input[type="file"] {
@@ -130,4 +136,13 @@ input:focus { border-color: rgba(104, 242, 176, .62); box-shadow: 0 0 0 3px rgba
   .grid { display: block; }
   .card { margin-bottom: 15px; padding: 20px; }
   .list-item { align-items: flex-start; flex-direction: column; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
 }

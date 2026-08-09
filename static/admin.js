@@ -5,6 +5,7 @@
   let activeAlertId = null;
   let alertPollTimer = null;
   let alertPollAttempts = 0;
+  let dispatchInFlight = false;
 
   const byId = (id) => document.getElementById(id);
   const statusPill = byId("api-status");
@@ -18,6 +19,9 @@
 
   function setUnlocked(unlocked) {
     controls.forEach((id) => { byId(id).disabled = !unlocked; });
+    document.querySelectorAll(".track-dispatch, .list-item button, #stop-alert").forEach((button) => {
+      button.disabled = !unlocked;
+    });
     statusPill.className = `pill ${unlocked ? "online" : ""}`;
     statusPill.innerHTML = `<span class="dot"></span> ${unlocked ? "Coordinator ready" : "Locked"}`;
   }
@@ -29,6 +33,11 @@
     const response = await fetch(path, { ...options, headers, cache: "no-store" });
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}));
+      if (response.status === 401) {
+        adminToken = "";
+        sessionStorage.removeItem("resonance.adminToken");
+        setUnlocked(false);
+      }
       throw new Error(payload.detail || `Request failed (${response.status})`);
     }
     return response.json();
@@ -117,6 +126,7 @@
         const revoke = document.createElement("button");
         revoke.className = "secondary small";
         revoke.textContent = "Revoke";
+        revoke.disabled = !adminToken;
         revoke.addEventListener("click", async () => {
           if (!window.confirm(`Revoke ${device.name}? This receiver will need a new enrollment code.`)) return;
           await api(`/api/devices/${device.id}`, { method: "DELETE" });
@@ -143,8 +153,9 @@
       info.querySelector("strong").textContent = track.name;
       info.querySelector("small").textContent = `${(track.size_bytes / 1024 / 1024).toFixed(2)} MB · SHA-256 ${track.sha256.slice(0, 12)}…`;
       const play = document.createElement("button");
-      play.className = "primary small";
+      play.className = "primary small track-dispatch";
       play.textContent = "Dispatch alert";
+      play.disabled = dispatchInFlight || !adminToken;
       play.addEventListener("click", () => dispatchAlert(track));
       item.append(info, play);
       list.append(item);
@@ -152,7 +163,13 @@
   }
 
   async function dispatchAlert(track) {
+    if (dispatchInFlight) return;
     if (!window.confirm(`Dispatch “${track.name}” to every connected receiver?`)) return;
+    dispatchInFlight = true;
+    document.querySelectorAll(".track-dispatch").forEach((button) => {
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+    });
     try {
       const result = await api("/api/alerts", {
         method: "POST",
@@ -165,6 +182,12 @@
       startAlertPolling();
     } catch (error) {
       setMessage("alert-message", error.message, "error");
+    } finally {
+      dispatchInFlight = false;
+      document.querySelectorAll(".track-dispatch").forEach((button) => {
+        button.disabled = !adminToken;
+        button.removeAttribute("aria-busy");
+      });
     }
   }
 
@@ -186,6 +209,9 @@
   byId("refresh").addEventListener("click", () => refresh().catch((error) => setMessage("auth-message", error.message, "error")));
 
   byId("create-code").addEventListener("click", async () => {
+    const button = byId("create-code");
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
     try {
       const enrollment = await api("/api/enrollments", { method: "POST", body: "{}" });
       const code = byId("enrollment-code");
@@ -194,6 +220,9 @@
       setMessage("enrollment-message", `Expires ${formatTime(enrollment.expires_at)}.`, "ok");
     } catch (error) {
       setMessage("enrollment-message", error.message, "error");
+    } finally {
+      button.disabled = !adminToken;
+      button.removeAttribute("aria-busy");
     }
   });
 
@@ -203,6 +232,9 @@
     if (!file) return;
     const form = new FormData();
     form.append("file", file);
+    const button = byId("upload-button");
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
     try {
       setMessage("upload-message", "Uploading and hashing…");
       const track = await api("/api/tracks", { method: "POST", body: form });
@@ -211,11 +243,17 @@
       await refresh();
     } catch (error) {
       setMessage("upload-message", error.message, "error");
+    } finally {
+      button.disabled = !adminToken;
+      button.removeAttribute("aria-busy");
     }
   });
 
   byId("stop-alert").addEventListener("click", async () => {
     if (!activeAlertId) return;
+    const button = byId("stop-alert");
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
     try {
       const result = await api(`/api/alerts/${activeAlertId}/stop`, { method: "POST" });
       setMessage("alert-message", `Stop signal delivered to ${result.delivered} receiver(s).`, "ok");
@@ -225,6 +263,9 @@
       byId("alert-progress").classList.add("hidden");
     } catch (error) {
       setMessage("alert-message", error.message, "error");
+    } finally {
+      button.disabled = false;
+      button.removeAttribute("aria-busy");
     }
   });
 

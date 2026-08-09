@@ -16,7 +16,7 @@ class Settings:
     enrollment_ttl_seconds: int = 600
 
     @classmethod
-    def from_environment(cls) -> "Settings":
+    def from_environment(cls) -> Settings:
         data_dir = Path(os.getenv("RESONANCE_DATA_DIR", "data")).resolve()
         data_dir.mkdir(parents=True, exist_ok=True)
 
