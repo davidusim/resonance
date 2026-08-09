@@ -1,0 +1,8 @@
+*
+!LICENSE
+!README.md
+!pyproject.toml
+!resonance/
+!resonance/**
+!static/
+!static/**

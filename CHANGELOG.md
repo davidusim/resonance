@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0
+
+- Added a GitHub Actions production-container build and runtime smoke test.
+- Verified the container is configured for a non-root user and serves the health, receiver, and administrator routes before CI succeeds.
+- Added a minimal allow-list Docker build context so local data, environments, caches, tests, and repository metadata are not sent to the builder.
+- Added CI concurrency control and a regression test that keeps runtime and package versions synchronized.
+
 ## 0.4.0
 
 - Added application-level rate limits for enrollment, device HTTP authentication, receiver WebSocket authentication, and invalid administrator credentials.

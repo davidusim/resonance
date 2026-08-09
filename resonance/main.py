@@ -27,6 +27,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from . import __version__
 from .config import Settings
 from .db import Database
 from .rate_limit import RateLimitDecision, TokenBucketRateLimiter
@@ -74,7 +75,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(
         title="Resonance Alert",
-        version="0.4.0",
+        version=__version__,
         docs_url=None,
         redoc_url=None,
         lifespan=lifespan,

@@ -62,6 +62,8 @@ pytest -q -W error
 pip-audit --progress-spinner off
 ```
 
+GitHub Actions also builds the production image, confirms its configured non-root user, waits for the container health check, and smokes the health, receiver, and administrator routes.
+
 ## Docker
 
 ```powershell

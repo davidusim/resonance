@@ -12,6 +12,8 @@
 
 The container runs as a non-root user and includes a health check. A writable persistent `/data` volume is required.
 
+Every push and pull request builds that production container in GitHub Actions. CI starts the image with an ephemeral data volume, waits for Docker's health status, and checks `/healthz`, `/`, and `/admin`. Treat a failing container-smoke job as a release blocker.
+
 ### Abuse-resistance settings
 
 Resonance applies process-local token buckets to sensitive authentication paths. Every setting must be a positive integer; invalid configuration prevents startup.
