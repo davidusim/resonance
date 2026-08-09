@@ -120,14 +120,99 @@ def test_authenticated_receiver_gets_scheduled_alert(client: TestClient) -> None
             json={"track_id": track["id"], "lead_ms": 3_000},
         )
         event = websocket.receive_json()
+        websocket.send_json(
+            {
+                "type": "alert.status",
+                "alert_id": event["alert_id"],
+                "status": "ready",
+                "detail": "Verified and scheduled",
+                "client_time_ms": event["start_at_ms"] - 1_000,
+            }
+        )
+        websocket.send_json({"type": "ping", "client_time_ms": 1})
+        assert websocket.receive_json()["type"] == "pong"
+
+        coordinator_status = client.get("/api/status", headers=admin_headers()).json()
 
     assert response.status_code == 200
     assert response.json()["delivered"] == 1
     assert event["type"] == "alert.prepare"
     assert event["track"]["sha256"] == track["sha256"]
-    # SQLite/audit work happens before the socket send, so allow a small part of the
-    # requested lead time to be consumed on unusually slow filesystems.
+    # The persistence margin preserves almost all of the requested lead time even
+    # on unusually slow filesystems.
     assert event["start_at_ms"] >= event["sent_at_ms"] + 2_500
+    alert_status = coordinator_status["alerts"][0]
+    assert alert_status["delivered_count"] == 1
+    assert alert_status["ready_count"] == 1
+    assert alert_status["error_count"] == 0
+    assert alert_status["receipts"][0]["device_name"] == "Lobby receiver"
+    assert alert_status["receipts"][0]["detail"] == "Verified and scheduled"
+
+
+def test_receiver_reconnecting_before_start_gets_pending_alert(client: TestClient) -> None:
+    device = enroll(client)
+    track = upload_track(client)
+    created = client.post(
+        "/api/alerts",
+        headers=admin_headers(),
+        json={"track_id": track["id"], "lead_ms": 3_000},
+    )
+
+    assert created.status_code == 200
+    assert created.json()["delivered"] == 0
+
+    with client.websocket_connect("/ws/receiver") as websocket:
+        websocket.send_json(
+            {
+                "type": "auth",
+                "device_id": device["device_id"],
+                "device_secret": device["device_secret"],
+            }
+        )
+        assert websocket.receive_json()["type"] == "auth.ok"
+        replay = websocket.receive_json()
+
+    assert replay["type"] == "alert.prepare"
+    assert replay["alert_id"] == created.json()["alert_id"]
+    assert replay["replayed"] is True
+    assert replay["track"]["id"] == track["id"]
+    status_payload = client.get("/api/status", headers=admin_headers()).json()
+    assert status_payload["alerts"][0]["delivered_count"] == 1
+
+
+def test_receiver_cannot_acknowledge_an_undelivered_alert(client: TestClient) -> None:
+    device = enroll(client)
+    track = upload_track(client)
+    created = client.post(
+        "/api/alerts",
+        headers=admin_headers(),
+        json={"track_id": track["id"], "lead_ms": 3_000},
+    ).json()
+    client.post(f"/api/alerts/{created['alert_id']}/stop", headers=admin_headers())
+
+    with client.websocket_connect("/ws/receiver") as websocket:
+        websocket.send_json(
+            {
+                "type": "auth",
+                "device_id": device["device_id"],
+                "device_secret": device["device_secret"],
+            }
+        )
+        assert websocket.receive_json()["type"] == "auth.ok"
+        websocket.send_json(
+            {
+                "type": "alert.status",
+                "alert_id": created["alert_id"],
+                "status": "ready",
+            }
+        )
+        websocket.send_json({"type": "ping", "client_time_ms": 1})
+        assert websocket.receive_json()["type"] == "pong"
+
+    alert_status = client.get("/api/status", headers=admin_headers()).json()["alerts"][0]
+    assert alert_status["delivered_count"] == 0
+    assert alert_status["receipt_count"] == 0
+    assert alert_status["receipts"] == []
 
 
 def test_revocation_invalidates_media_access(client: TestClient) -> None:

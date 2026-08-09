@@ -10,7 +10,7 @@ It is intentionally **not** a Bluetooth takeover tool. Bluetooth pairing, operat
 2. The operator creates a short-lived, single-use enrollment code.
 3. A participant opens the receiver page on a phone, tablet, laptop, or small computer, enters the code, and taps once to enable audio.
 4. The receiver uses that device's current system audio route. A Bluetooth speaker can be selected through normal system settings.
-5. The operator uploads an audio file and dispatches it. Connected receivers verify its SHA-256 hash, buffer it, and schedule playback against the coordinator clock.
+5. The operator uploads an audio file and dispatches it. Connected receivers verify its SHA-256 hash, buffer it, schedule playback against the coordinator clock, and report readiness and playback state.
 
 ```text
                          authenticated WebSocket
@@ -26,6 +26,8 @@ It is intentionally **not** a Bluetooth takeover tool. Bluetooth pairing, operat
 - Immediate receiver revocation and socket disconnect
 - Authenticated audio downloads with receiver-side SHA-256 verification
 - WebSocket dispatch with a shared future start time and client clock-offset sampling
+- Per-receiver `ready`, `playing`, `completed`, `stopped`, and `error` receipts
+- Pending-alert replay when a receiver reconnects before the scheduled start
 - Synchronized stop signal
 - SQLite device, track, alert, and audit metadata
 - Responsive coordinator and receiver web interfaces
@@ -79,7 +81,7 @@ See [SECURITY.md](SECURITY.md) for operational security guidance.
 
 Ordinary Bluetooth speakers are audio peripherals, not general-purpose network receivers. They usually accept one paired audio source at a time and deliberately require a user-approved pairing handshake. A coordinator also cannot force arbitrary phones or laptops to route audio or ignore their OS controls. The receiver-per-output design is the interoperable path: consent and pairing happen during setup, before a crisis.
 
-Synchronization is best-effort. Each browser estimates its offset from the coordinator, downloads and verifies the audio, decodes it, then schedules it on the Web Audio clock. Real-world skew depends on network delay, browser scheduling, Bluetooth codec buffers, and speaker firmware.
+Synchronization is best-effort. Each browser estimates its offset from the coordinator, downloads and verifies the audio, decodes it, then schedules it on the Web Audio clock. Real-world skew depends on network delay, browser scheduling, Bluetooth codec buffers, and speaker firmware. A `playing` receipt confirms that the receiver scheduled playback; it cannot prove that a physical speaker was powered on or audible.
 
 ## License
 

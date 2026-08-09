@@ -65,10 +65,26 @@
     return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
   }
 
+  function sendAlertStatus(alertId, status, detail = "") {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    socket.send(JSON.stringify({
+      type: "alert.status",
+      alert_id: alertId,
+      status,
+      detail: String(detail).slice(0, 240),
+      client_time_ms: Date.now() + clockOffsetMs
+    }));
+  }
+
   async function prepareAlert(message) {
+    if (activeSources.has(message.alert_id)) {
+      sendAlertStatus(message.alert_id, "ready", "Alert was already scheduled");
+      return;
+    }
     if (!audioContext || audioContext.state !== "running") {
       byId("enable-audio").classList.remove("hidden");
       setStage("Audio needs a tap", "Enable audio now to receive this alert.", "alert");
+      sendAlertStatus(message.alert_id, "error", "Audio context is not enabled");
       return;
     }
     setStage("Preparing alert", `Verifying ${message.track.name}…`, "loading");
@@ -88,23 +104,36 @@
       const delaySeconds = Math.max(0, (message.start_at_ms - serverNow) / 1000);
       const scheduledFor = audioContext.currentTime + delaySeconds;
       source.start(scheduledFor);
-      activeSources.set(message.alert_id, source);
+      const playback = { source, startTimer: null, stopped: false };
+      playback.startTimer = window.setTimeout(() => {
+        if (!playback.stopped) sendAlertStatus(message.alert_id, "playing");
+      }, delaySeconds * 1000);
+      activeSources.set(message.alert_id, playback);
+      sendAlertStatus(message.alert_id, "ready");
       source.addEventListener("ended", () => {
+        window.clearTimeout(playback.startTimer);
         activeSources.delete(message.alert_id);
-        if (!activeSources.size) setStage("Standing by", "The alert finished. The trusted channel remains connected.");
+        if (!playback.stopped) {
+          sendAlertStatus(message.alert_id, "completed");
+          if (!activeSources.size) setStage("Standing by", "The alert finished. The trusted channel remains connected.");
+        }
       });
       setStage("Emergency alert", `${message.track.name} · synchronized playback`, "alert");
     } catch (error) {
       setStage("Alert could not play", error.message, "alert");
+      sendAlertStatus(message.alert_id, "error", error.message);
     }
   }
 
   function stopAlert(alertId) {
-    const source = activeSources.get(alertId);
-    if (source) {
-      try { source.stop(); } catch { /* already stopped */ }
+    const playback = activeSources.get(alertId);
+    if (playback) {
+      playback.stopped = true;
+      window.clearTimeout(playback.startTimer);
+      try { playback.source.stop(); } catch { /* already stopped */ }
       activeSources.delete(alertId);
     }
+    sendAlertStatus(alertId, "stopped");
     if (!activeSources.size) setStage("Standing by", "Stop signal received. The trusted channel remains connected.");
   }
 

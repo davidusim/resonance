@@ -18,3 +18,5 @@ Please use GitHub's private vulnerability reporting feature rather than opening 
 - Do not modify Resonance to bypass Bluetooth pairing, operating-system consent, browser audio activation, or access controls.
 
 Receiver secrets are randomly generated, stored only as PBKDF2-HMAC-SHA256 hashes on the coordinator, and transmitted only at initial enrollment. Audio is SHA-256 checked before playback. These controls do not replace TLS, endpoint security, network segmentation, or an incident-response plan.
+
+Receiver status receipts are authenticated to an enrolled device identity, but they are operational telemetry rather than proof that a physical speaker emitted audible sound. Continue to test the complete device-to-speaker path during drills.

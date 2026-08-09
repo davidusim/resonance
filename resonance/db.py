@@ -57,7 +57,24 @@ class Database:
                     track_id TEXT NOT NULL REFERENCES tracks(id),
                     start_at INTEGER NOT NULL,
                     created_at INTEGER NOT NULL,
-                    stopped_at INTEGER
+                    stopped_at INTEGER,
+                    delivered_count INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS alert_receipts (
+                    alert_id TEXT NOT NULL REFERENCES alerts(id) ON DELETE CASCADE,
+                    device_id TEXT NOT NULL REFERENCES devices(id),
+                    status TEXT NOT NULL,
+                    detail TEXT,
+                    client_time_ms INTEGER,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY(alert_id, device_id)
+                );
+                CREATE TABLE IF NOT EXISTS alert_deliveries (
+                    alert_id TEXT NOT NULL REFERENCES alerts(id) ON DELETE CASCADE,
+                    device_id TEXT NOT NULL REFERENCES devices(id),
+                    delivered_at INTEGER NOT NULL,
+                    replayed INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY(alert_id, device_id)
                 );
                 CREATE TABLE IF NOT EXISTS audit_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,8 +84,17 @@ class Database:
                     created_at INTEGER NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_events(created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_receipts_alert ON alert_receipts(alert_id);
+                CREATE INDEX IF NOT EXISTS idx_deliveries_alert ON alert_deliveries(alert_id);
                 """
             )
+            alert_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(alerts)").fetchall()
+            }
+            if "delivered_count" not in alert_columns:
+                connection.execute(
+                    "ALTER TABLE alerts ADD COLUMN delivered_count INTEGER NOT NULL DEFAULT 0"
+                )
 
     def execute(self, sql: str, parameters: tuple[Any, ...] = ()) -> None:
         with self._lock, self._connect() as connection:
@@ -140,6 +166,86 @@ class Database:
         self.execute(
             "UPDATE devices SET last_seen_at = ? WHERE id = ?",
             (int(time.time() * 1000), device_id),
+        )
+
+    def record_alert_receipt(
+        self,
+        alert_id: str,
+        device_id: str,
+        receipt_status: str,
+        detail: str,
+        client_time_ms: int | None,
+    ) -> bool:
+        now = int(time.time() * 1000)
+        with self._lock, self._connect() as connection:
+            delivery = connection.execute(
+                """
+                SELECT a.id
+                FROM alerts a
+                JOIN alert_deliveries d ON d.alert_id = a.id
+                WHERE a.id = ? AND d.device_id = ? AND a.created_at >= ?
+                """,
+                (alert_id, device_id, now - 24 * 60 * 60 * 1000),
+            ).fetchone()
+            if not delivery:
+                return False
+            connection.execute(
+                """
+                INSERT INTO alert_receipts(
+                    alert_id, device_id, status, detail, client_time_ms, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?)
+                ON CONFLICT(alert_id, device_id) DO UPDATE SET
+                    status = excluded.status,
+                    detail = excluded.detail,
+                    client_time_ms = excluded.client_time_ms,
+                    updated_at = excluded.updated_at
+                """,
+                (alert_id, device_id, receipt_status, detail, client_time_ms, now),
+            )
+            connection.execute("UPDATE devices SET last_seen_at = ? WHERE id = ?", (now, device_id))
+            connection.commit()
+            return True
+
+    def record_alert_deliveries(
+        self, alert_id: str, device_ids: list[str], *, replayed: bool
+    ) -> int:
+        now = int(time.time() * 1000)
+        unique_ids = set(device_ids)
+        with self._lock, self._connect() as connection:
+            connection.executemany(
+                """
+                INSERT INTO alert_deliveries(alert_id, device_id, delivered_at, replayed)
+                VALUES(?, ?, ?, ?)
+                ON CONFLICT(alert_id, device_id) DO UPDATE SET
+                    delivered_at = excluded.delivered_at,
+                    replayed = MAX(alert_deliveries.replayed, excluded.replayed)
+                """,
+                [(alert_id, device_id, now, int(replayed)) for device_id in unique_ids],
+            )
+            delivered_count = connection.execute(
+                "SELECT COUNT(*) AS count FROM alert_deliveries WHERE alert_id = ?",
+                (alert_id,),
+            ).fetchone()["count"]
+            connection.execute(
+                "UPDATE alerts SET delivered_count = ? WHERE id = ?",
+                (delivered_count, alert_id),
+            )
+            connection.commit()
+            return int(delivered_count)
+
+    def pending_alerts(self) -> list[dict[str, Any]]:
+        now = int(time.time() * 1000)
+        return self.fetch_all(
+            """
+            SELECT
+                a.id, a.start_at, t.id AS track_id, t.name AS track_name,
+                t.sha256, t.content_type
+            FROM alerts a
+            JOIN tracks t ON t.id = a.track_id
+            WHERE a.stopped_at IS NULL AND a.start_at > ?
+            ORDER BY a.start_at ASC
+            """,
+            (now,),
         )
 
     def audit(self, event_type: str, subject_id: str | None, details: dict[str, Any]) -> None:

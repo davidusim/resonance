@@ -36,6 +36,8 @@ from .security import (
 SOURCE_STATIC_DIR = Path(__file__).parent.parent / "static"
 INSTALLED_STATIC_DIR = Path(sys.prefix) / "static"
 STATIC_DIR = SOURCE_STATIC_DIR if SOURCE_STATIC_DIR.is_dir() else INSTALLED_STATIC_DIR
+ALERT_RECEIPT_STATUSES = frozenset({"ready", "playing", "completed", "stopped", "error"})
+SCHEDULE_PERSISTENCE_MARGIN_MS = 1_000
 
 
 class EnrollmentRequest(BaseModel):
@@ -78,15 +80,15 @@ class ConnectionManager:
             except RuntimeError:
                 pass
 
-    async def broadcast(self, payload: dict[str, Any]) -> int:
+    async def broadcast(self, payload: dict[str, Any]) -> list[str]:
         async with self._lock:
             connections = list(self._connections.items())
-        delivered = 0
+        delivered: list[str] = []
         stale: list[tuple[str, WebSocket]] = []
         for device_id, websocket in connections:
             try:
                 await websocket.send_json(payload)
-                delivered += 1
+                delivered.append(device_id)
             except (RuntimeError, OSError, WebSocketDisconnect):
                 stale.append((device_id, websocket))
         for device_id, websocket in stale:
@@ -116,7 +118,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(
         title="Resonance Alert",
-        version="0.1.0",
+        version="0.2.0",
         docs_url=None,
         redoc_url=None,
         lifespan=lifespan,
@@ -124,6 +126,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = resolved
     app.state.db = database
     app.state.connections = manager
+
+    def build_alert_event(
+        *,
+        alert_id: str,
+        track_id: str,
+        track_name: str,
+        sha256: str,
+        content_type: str,
+        start_at_ms: int,
+        replayed: bool = False,
+    ) -> dict[str, Any]:
+        return {
+            "type": "alert.prepare",
+            "alert_id": alert_id,
+            "track": {
+                "id": track_id,
+                "name": track_name,
+                "sha256": sha256,
+                "content_type": content_type,
+                "url": f"/media/{track_id}",
+            },
+            "start_at_ms": start_at_ms,
+            "sent_at_ms": int(time.time() * 1000),
+            "replayed": replayed,
+        }
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
@@ -297,26 +324,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Track not found")
         lead_ms = payload.lead_ms or resolved.default_lead_ms
         now = int(time.time() * 1000)
-        start_at = now + lead_ms
+        # Leave room for the durable SQLite write before the prepare event is sent.
+        # Receivers still receive at least the configured preparation window on
+        # ordinary storage, rather than losing it to coordinator persistence.
+        start_at = now + lead_ms + SCHEDULE_PERSISTENCE_MARGIN_MS
         alert_id = str(uuid.uuid4())
         database.execute(
             "INSERT INTO alerts(id, track_id, start_at, created_at) VALUES(?, ?, ?, ?)",
             (alert_id, payload.track_id, start_at, now),
         )
-        event = {
-            "type": "alert.prepare",
-            "alert_id": alert_id,
-            "track": {
-                "id": track["id"],
-                "name": track["name"],
-                "sha256": track["sha256"],
-                "content_type": track["content_type"],
-                "url": f"/media/{track['id']}",
-            },
-            "start_at_ms": start_at,
-            "sent_at_ms": int(time.time() * 1000),
-        }
-        delivered = await manager.broadcast(event)
+        event = build_alert_event(
+            alert_id=alert_id,
+            track_id=track["id"],
+            track_name=track["name"],
+            sha256=track["sha256"],
+            content_type=track["content_type"],
+            start_at_ms=start_at,
+        )
+        delivered_ids = await manager.broadcast(event)
+        delivered = database.record_alert_deliveries(alert_id, delivered_ids, replayed=False)
         database.audit(
             "alert.started", alert_id, {"track_id": payload.track_id, "delivered": delivered}
         )
@@ -329,9 +355,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Alert not found")
         stopped_at = int(time.time() * 1000)
         database.execute("UPDATE alerts SET stopped_at = ? WHERE id = ?", (stopped_at, alert_id))
-        delivered = await manager.broadcast(
+        delivered_ids = await manager.broadcast(
             {"type": "alert.stop", "alert_id": alert_id, "sent_at_ms": stopped_at}
         )
+        delivered = len(delivered_ids)
         database.audit("alert.stopped", alert_id, {"delivered": delivered})
         return {"status": "stopped", "delivered": delivered}
 
@@ -339,11 +366,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def coordinator_status() -> dict[str, Any]:
         recent_alerts = database.fetch_all(
             """
-            SELECT a.id, a.track_id, t.name AS track_name, a.start_at, a.created_at, a.stopped_at
-            FROM alerts a JOIN tracks t ON t.id = a.track_id
+            SELECT
+                a.id, a.track_id, t.name AS track_name, a.start_at, a.created_at,
+                a.stopped_at, a.delivered_count,
+                COUNT(r.device_id) AS receipt_count,
+                COALESCE(SUM(CASE WHEN r.status = 'ready' THEN 1 ELSE 0 END), 0) AS ready_count,
+                COALESCE(SUM(CASE WHEN r.status = 'playing' THEN 1 ELSE 0 END), 0) AS playing_count,
+                COALESCE(SUM(CASE WHEN r.status = 'completed' THEN 1 ELSE 0 END), 0) AS completed_count,
+                COALESCE(SUM(CASE WHEN r.status = 'stopped' THEN 1 ELSE 0 END), 0) AS stopped_count,
+                COALESCE(SUM(CASE WHEN r.status = 'error' THEN 1 ELSE 0 END), 0) AS error_count
+            FROM alerts a
+            JOIN tracks t ON t.id = a.track_id
+            LEFT JOIN alert_receipts r ON r.alert_id = a.id
+            GROUP BY a.id
             ORDER BY a.created_at DESC LIMIT 20
             """
         )
+        if recent_alerts:
+            placeholders = ",".join("?" for _ in recent_alerts)
+            receipts = database.fetch_all(
+                f"""
+                SELECT
+                    r.alert_id, r.device_id, d.name AS device_name, r.status,
+                    r.detail, r.client_time_ms, r.updated_at
+                FROM alert_receipts r
+                JOIN devices d ON d.id = r.device_id
+                WHERE r.alert_id IN ({placeholders})
+                ORDER BY r.updated_at DESC
+                """,
+                tuple(alert["id"] for alert in recent_alerts),
+            )
+            for alert in recent_alerts:
+                alert["receipts"] = [
+                    receipt for receipt in receipts if receipt["alert_id"] == alert["id"]
+                ]
         audit = database.fetch_all(
             """
             SELECT event_type, subject_id, details_json, created_at
@@ -375,9 +431,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "server_time_ms": int(time.time() * 1000),
                 }
             )
+            for pending in database.pending_alerts():
+                await websocket.send_json(
+                    build_alert_event(
+                        alert_id=pending["id"],
+                        track_id=pending["track_id"],
+                        track_name=pending["track_name"],
+                        sha256=pending["sha256"],
+                        content_type=pending["content_type"],
+                        start_at_ms=pending["start_at"],
+                        replayed=True,
+                    )
+                )
+                database.record_alert_deliveries(pending["id"], [device_id], replayed=True)
             while True:
                 message = await websocket.receive_json()
-                if isinstance(message, dict) and message.get("type") == "ping":
+                if not isinstance(message, dict):
+                    continue
+                if message.get("type") == "ping":
                     await websocket.send_json(
                         {
                             "type": "pong",
@@ -386,6 +457,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         }
                     )
                     database.touch_device(device_id)
+                elif message.get("type") == "alert.status":
+                    receipt_status = str(message.get("status", ""))
+                    alert_id = str(message.get("alert_id", ""))
+                    if receipt_status not in ALERT_RECEIPT_STATUSES or not alert_id:
+                        continue
+                    raw_client_time = message.get("client_time_ms")
+                    client_time_ms = (
+                        int(raw_client_time)
+                        if isinstance(raw_client_time, (int, float))
+                        and not isinstance(raw_client_time, bool)
+                        and -(2**53) < raw_client_time < 2**53
+                        else None
+                    )
+                    detail = " ".join(str(message.get("detail", "")).split())[:240]
+                    database.record_alert_receipt(
+                        alert_id, device_id, receipt_status, detail, client_time_ms
+                    )
         except (WebSocketDisconnect, asyncio.TimeoutError, ValueError):
             pass
         finally:

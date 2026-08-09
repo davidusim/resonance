@@ -104,6 +104,8 @@ input:focus { border-color: rgba(104, 242, 176, .62); box-shadow: 0 0 0 3px rgba
 .message { min-height: 22px; margin: 10px 0 0; font-size: 13px; color: var(--muted); }
 .message.error { color: var(--red); }
 .message.ok { color: var(--green); }
+.progress-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.progress-row strong { color: var(--ink); }
 
 .receiver-hero { text-align: center; padding: 44px 0 30px; }
 .receiver-hero .mark { margin: 0 auto 24px; width: 70px; height: 70px; }

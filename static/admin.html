@@ -66,11 +66,17 @@
         <div class="row" style="justify-content:space-between">
           <div>
             <h2>Prepared audio</h2>
-            <p>Playback starts five seconds after dispatch so receivers can buffer and align clocks.</p>
+            <p>Playback starts at least five seconds after dispatch so receivers can buffer and align clocks.</p>
           </div>
           <button id="stop-alert" class="danger hidden" type="button">Stop active alert</button>
         </div>
         <div id="track-list" class="list"><div class="empty">Unlock to load audio.</div></div>
+        <div id="alert-progress" class="progress-row hidden" aria-live="polite">
+          <span class="pill online"><span class="dot"></span> Ready <strong id="ready-count">0</strong></span>
+          <span class="pill warning"><span class="dot"></span> Playing <strong id="playing-count">0</strong></span>
+          <span class="pill"><span class="dot"></span> Completed <strong id="completed-count">0</strong></span>
+          <span class="pill error"><span class="dot"></span> Errors <strong id="error-count">0</strong></span>
+        </div>
         <div id="alert-message" class="message" role="status"></div>
       </article>
 

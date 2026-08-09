@@ -3,6 +3,8 @@
 
   let adminToken = sessionStorage.getItem("resonance.adminToken") || "";
   let activeAlertId = null;
+  let alertPollTimer = null;
+  let alertPollAttempts = 0;
 
   const byId = (id) => document.getElementById(id);
   const statusPill = byId("api-status");
@@ -42,7 +44,57 @@
     byId("device-count").textContent = devices.devices.filter((item) => !item.revoked).length;
     renderDevices(devices.devices);
     renderTracks(tracks.tracks);
+    renderAlertProgress(status.alerts);
     setUnlocked(true);
+  }
+
+  function renderAlertProgress(alerts) {
+    if (!activeAlertId) {
+      const candidate = alerts.find((alert) => {
+        const terminal = alert.completed_count + alert.stopped_count + alert.error_count;
+        return !alert.stopped_at && alert.delivered_count > 0 && terminal < alert.delivered_count;
+      });
+      if (candidate) activeAlertId = candidate.id;
+    }
+    const alert = alerts.find((item) => item.id === activeAlertId);
+    if (!alert) return;
+
+    byId("alert-progress").classList.remove("hidden");
+    byId("stop-alert").classList.remove("hidden");
+    byId("ready-count").textContent = alert.ready_count;
+    byId("playing-count").textContent = alert.playing_count;
+    byId("completed-count").textContent = alert.completed_count;
+    byId("error-count").textContent = alert.error_count;
+
+    const errorDevices = alert.receipts
+      .filter((receipt) => receipt.status === "error")
+      .map((receipt) => receipt.device_name)
+      .join(", ");
+    const detail = errorDevices ? ` Errors: ${errorDevices}.` : "";
+    setMessage(
+      "alert-message",
+      `${alert.track_name}: ${alert.ready_count} ready, ${alert.playing_count} playing, ` +
+        `${alert.completed_count} completed of ${alert.delivered_count} dispatched.${detail}`,
+      alert.error_count ? "error" : "ok"
+    );
+
+    const terminal = alert.completed_count + alert.stopped_count + alert.error_count;
+    if (alert.delivered_count > 0 && terminal >= alert.delivered_count) stopAlertPolling();
+  }
+
+  function startAlertPolling() {
+    stopAlertPolling();
+    alertPollAttempts = 0;
+    alertPollTimer = window.setInterval(() => {
+      alertPollAttempts += 1;
+      refresh().catch((error) => setMessage("alert-message", error.message, "error"));
+      if (alertPollAttempts >= 40) stopAlertPolling();
+    }, 1500);
+  }
+
+  function stopAlertPolling() {
+    if (alertPollTimer) window.clearInterval(alertPollTimer);
+    alertPollTimer = null;
   }
 
   function renderDevices(devices) {
@@ -110,6 +162,7 @@
       byId("stop-alert").classList.remove("hidden");
       setMessage("alert-message", `Dispatched to ${result.delivered} receiver(s). Scheduled for ${formatTime(result.start_at_ms)}.`, "ok");
       await refresh();
+      startAlertPolling();
     } catch (error) {
       setMessage("alert-message", error.message, "error");
     }
@@ -167,7 +220,9 @@
       const result = await api(`/api/alerts/${activeAlertId}/stop`, { method: "POST" });
       setMessage("alert-message", `Stop signal delivered to ${result.delivered} receiver(s).`, "ok");
       activeAlertId = null;
+      stopAlertPolling();
       byId("stop-alert").classList.add("hidden");
+      byId("alert-progress").classList.add("hidden");
     } catch (error) {
       setMessage("alert-message", error.message, "error");
     }
