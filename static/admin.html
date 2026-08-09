@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Resonance emergency audio coordinator">
+  <title>Resonance — Coordinator</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <nav class="topbar">
+      <div class="brand"><span class="mark" aria-hidden="true"></span> Resonance</div>
+      <span id="api-status" class="pill"><span class="dot"></span> Locked</span>
+    </nav>
+
+    <header>
+      <p class="eyebrow">Emergency audio coordinator</p>
+      <h1>One signal.<br>Every enrolled receiver.</h1>
+      <p class="lede">Prepare audio, enroll trusted receiving devices, and schedule playback against a shared clock.</p>
+    </header>
+
+    <section class="grid">
+      <article class="card">
+        <h2>Unlock coordinator</h2>
+        <p>Use the admin token printed at startup or provided through the environment.</p>
+        <form id="auth-form" class="stack">
+          <div class="field">
+            <label for="admin-token">Admin token</label>
+            <input id="admin-token" type="password" autocomplete="current-password" required>
+          </div>
+          <button class="primary" type="submit">Unlock dashboard</button>
+        </form>
+        <div id="auth-message" class="message" role="status"></div>
+      </article>
+
+      <article class="card">
+        <h2>Live network</h2>
+        <div class="metric"><span>Connected receivers</span><strong id="connected-count">—</strong></div>
+        <div class="metric"><span>Enrolled devices</span><strong id="device-count">—</strong></div>
+        <button id="refresh" class="secondary" type="button" disabled>Refresh</button>
+      </article>
+
+      <article class="card">
+        <h2>Enroll a receiver</h2>
+        <p>Create a one-time code. It expires in ten minutes and can enroll exactly one device.</p>
+        <button id="create-code" class="primary" type="button" disabled>Create enrollment code</button>
+        <div id="enrollment-code" class="code hidden" aria-live="polite"></div>
+        <div id="enrollment-message" class="message" role="status"></div>
+      </article>
+
+      <article class="card">
+        <h2>Upload emergency audio</h2>
+        <p>Audio is hashed on upload and verified by every receiver before playback.</p>
+        <form id="upload-form" class="stack">
+          <div class="field">
+            <label for="audio-file">Audio file · maximum 25 MB</label>
+            <input id="audio-file" name="file" type="file" accept="audio/*" required disabled>
+          </div>
+          <button id="upload-button" class="primary" type="submit" disabled>Upload audio</button>
+        </form>
+        <div id="upload-message" class="message" role="status"></div>
+      </article>
+
+      <article class="card full">
+        <div class="row" style="justify-content:space-between">
+          <div>
+            <h2>Prepared audio</h2>
+            <p>Playback starts five seconds after dispatch so receivers can buffer and align clocks.</p>
+          </div>
+          <button id="stop-alert" class="danger hidden" type="button">Stop active alert</button>
+        </div>
+        <div id="track-list" class="list"><div class="empty">Unlock to load audio.</div></div>
+        <div id="alert-message" class="message" role="status"></div>
+      </article>
+
+      <article class="card full">
+        <h2>Trusted receivers</h2>
+        <div id="device-list" class="list"><div class="empty">Unlock to load receivers.</div></div>
+      </article>
+    </section>
+  </main>
+  <script src="/static/admin.js" defer></script>
+</body>
+</html>
