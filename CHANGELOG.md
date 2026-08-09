@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0
+
+- Added application-level rate limits for enrollment, device HTTP authentication, receiver WebSocket authentication, and invalid administrator credentials.
+- Added standard HTTP `429` responses with `Retry-After` and a dedicated WebSocket close code for limited receivers.
+- Bounded rate-limiter memory with least-recently-used client eviction and added fail-fast environment configuration validation.
+- Added an explicit WebSocket close frame when receiver authentication times out.
+- Added rate-limit security, refill, memory-bound, configuration, HTTP, and WebSocket regression tests.
+
 ## 0.3.0
 
 - Made alert creation and receiver delivery authorization atomic before fanout.

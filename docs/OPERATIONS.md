@@ -8,8 +8,24 @@
 4. Terminate TLS at a trusted reverse proxy and preserve WebSocket upgrades.
 5. Restrict `/admin` through a private network, VPN, or proxy access policy.
 6. Confirm `GET /healthz` returns HTTP 200 with `{"status":"ok","database":"ok"}`.
+7. Apply distributed rate limits at the reverse proxy and configure Uvicorn to trust forwarded client addresses only from known proxy IPs.
 
 The container runs as a non-root user and includes a health check. A writable persistent `/data` volume is required.
+
+### Abuse-resistance settings
+
+Resonance applies process-local token buckets to sensitive authentication paths. Every setting must be a positive integer; invalid configuration prevents startup.
+
+| Environment variable | Default | Purpose |
+| --- | ---: | --- |
+| `RESONANCE_RATE_LIMIT_WINDOW_SECONDS` | `60` | Refill window shared by all buckets |
+| `RESONANCE_RATE_LIMIT_MAX_CLIENTS` | `10000` | Maximum retained peer keys per limiter |
+| `RESONANCE_ENROLLMENT_ATTEMPT_LIMIT` | `6` | Enrollment submissions per peer per window |
+| `RESONANCE_DEVICE_AUTH_ATTEMPT_LIMIT` | `60` | Device HTTP and WebSocket attempts per peer/device pair per window, independently |
+| `RESONANCE_DEVICE_PEER_ATTEMPT_LIMIT` | `600` | Aggregate device HTTP and WebSocket attempts per peer per window, independently |
+| `RESONANCE_ADMIN_AUTH_FAILURE_LIMIT` | `10` | Invalid administrator credentials per peer per window |
+
+HTTP limits return `429 Too Many Requests` with `Retry-After`. Limited receiver sockets close with code `4429`. A correct administrator token remains usable after invalid attempts from the same peer, avoiding an application-level lockout of emergency controls.
 
 ## Observability
 
@@ -20,6 +36,7 @@ Monitor at minimum:
 - health-check failures;
 - HTTP 5xx and latency changes;
 - repeated rejected receipts or authentication failures at the proxy;
+- `rate_limit_exceeded` application log events and HTTP 429 changes;
 - connected receiver count before a drill or incident;
 - per-alert `ready` and `error` counts in the coordinator.
 

@@ -31,6 +31,7 @@ It is intentionally **not** a Bluetooth takeover tool. Bluetooth pairing, operat
 - Durable stop replay, including stops received while audio is downloading or decoding
 - Concurrent, timeout-bounded fanout so a slow receiver does not delay healthy receivers
 - Continuous clock calibration from receiver heartbeat round trips
+- Memory-bounded rate limits for enrollment and authentication attempts
 - SQLite device, track, alert, and audit metadata
 - Responsive coordinator and receiver web interfaces
 - Database-aware health checks, request correlation, and critical-event logging

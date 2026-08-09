@@ -2,7 +2,9 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+import resonance.main as main_module
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from resonance.config import Settings
 from resonance.main import create_app
@@ -17,6 +19,25 @@ def client(tmp_path: Path):
             data_dir=tmp_path,
             admin_token=ADMIN_TOKEN,
             default_lead_ms=3_000,
+        )
+    )
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def limited_client(tmp_path: Path):
+    app = create_app(
+        Settings(
+            data_dir=tmp_path,
+            admin_token=ADMIN_TOKEN,
+            default_lead_ms=3_000,
+            rate_limit_window_seconds=60,
+            rate_limit_max_clients=3,
+            enrollment_attempt_limit=2,
+            device_auth_attempt_limit=2,
+            device_peer_attempt_limit=10,
+            admin_auth_failure_limit=2,
         )
     )
     with TestClient(app) as test_client:
@@ -67,6 +88,21 @@ def test_admin_routes_require_bearer_token(client: TestClient) -> None:
     assert client.get("/api/devices", headers=admin_headers()).status_code == 200
 
 
+def test_invalid_admin_attempts_are_limited_without_blocking_valid_token(
+    limited_client: TestClient,
+) -> None:
+    wrong_headers = {"Authorization": "Bearer wrong"}
+
+    assert limited_client.get("/api/devices", headers=wrong_headers).status_code == 401
+    assert limited_client.get("/api/devices", headers=wrong_headers).status_code == 401
+    blocked = limited_client.get("/api/devices", headers=wrong_headers)
+
+    assert blocked.status_code == 429
+    assert int(blocked.headers["retry-after"]) >= 1
+    assert blocked.json() == {"detail": "Too many attempts. Try again later."}
+    assert limited_client.get("/api/devices", headers=admin_headers()).status_code == 200
+
+
 def test_health_reports_database_failure(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -99,6 +135,84 @@ def test_enrollment_code_is_single_use_and_secret_is_not_listed(client: TestClie
     assert devices[0]["name"] == "West hallway"
     assert "secret" not in devices[0]
     assert "secret_hash" not in devices[0]
+
+
+def test_enrollment_attempts_return_retry_after_when_limited(
+    limited_client: TestClient,
+) -> None:
+    payload = {"code": "AAAAA-AAAAA", "name": "Untrusted receiver"}
+
+    assert limited_client.post("/api/devices/enroll", json=payload).status_code == 400
+    assert limited_client.post("/api/devices/enroll", json=payload).status_code == 400
+    blocked = limited_client.post("/api/devices/enroll", json=payload)
+
+    assert blocked.status_code == 429
+    assert int(blocked.headers["retry-after"]) >= 1
+
+
+def test_device_http_authentication_attempts_are_limited(limited_client: TestClient) -> None:
+    headers = {"X-Device-Id": "missing", "Authorization": "Bearer invalid"}
+
+    assert limited_client.get("/media/missing", headers=headers).status_code == 401
+    assert limited_client.get("/media/missing", headers=headers).status_code == 401
+    blocked = limited_client.get("/media/missing", headers=headers)
+
+    assert blocked.status_code == 429
+    assert int(blocked.headers["retry-after"]) >= 1
+
+
+def test_receivers_behind_one_peer_have_independent_device_buckets(tmp_path: Path) -> None:
+    app = create_app(
+        Settings(
+            data_dir=tmp_path,
+            admin_token=ADMIN_TOKEN,
+            enrollment_attempt_limit=3,
+            device_auth_attempt_limit=1,
+            device_peer_attempt_limit=5,
+        )
+    )
+    with TestClient(app) as shared_peer_client:
+        first_headers = {"X-Device-Id": "first-device", "Authorization": "Bearer invalid"}
+        second_headers = {"X-Device-Id": "second-device", "Authorization": "Bearer invalid"}
+
+        assert shared_peer_client.get("/media/missing", headers=first_headers).status_code == 401
+        assert shared_peer_client.get("/media/missing", headers=first_headers).status_code == 429
+        assert shared_peer_client.get("/media/missing", headers=second_headers).status_code == 401
+
+
+def test_receiver_websocket_authentication_attempts_are_limited(
+    limited_client: TestClient,
+) -> None:
+    invalid_auth = {
+        "type": "auth",
+        "device_id": "missing",
+        "device_secret": "invalid",
+    }
+    for _ in range(2):
+        with pytest.raises(WebSocketDisconnect) as rejected:
+            with limited_client.websocket_connect("/ws/receiver") as websocket:
+                websocket.send_json(invalid_auth)
+                websocket.receive_json()
+        assert rejected.value.code == 4401
+
+    with pytest.raises(WebSocketDisconnect) as limited:
+        with limited_client.websocket_connect("/ws/receiver") as websocket:
+            websocket.send_json(invalid_auth)
+            websocket.receive_json()
+
+    assert limited.value.code == 4429
+
+
+def test_receiver_websocket_authentication_timeout_sends_close_frame(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(main_module, "WEBSOCKET_AUTH_TIMEOUT_SECONDS", 0.01)
+
+    with pytest.raises(WebSocketDisconnect) as timed_out:
+        with client.websocket_connect("/ws/receiver") as websocket:
+            websocket.receive_json()
+
+    assert timed_out.value.code == 4408
 
 
 def test_media_requires_enrolled_device_credentials(client: TestClient) -> None:

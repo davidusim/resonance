@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 
 from .config import Settings
 from .db import Database
+from .rate_limit import RateLimitDecision, TokenBucketRateLimiter
 from .realtime import ConnectionManager
 from .security import (
     constant_time_equal,
@@ -41,6 +42,7 @@ INSTALLED_STATIC_DIR = Path(sys.prefix) / "static"
 STATIC_DIR = SOURCE_STATIC_DIR if SOURCE_STATIC_DIR.is_dir() else INSTALLED_STATIC_DIR
 ALERT_RECEIPT_STATUSES = frozenset({"ready", "playing", "completed", "stopped", "error"})
 SCHEDULE_PERSISTENCE_MARGIN_MS = 1_000
+WEBSOCKET_AUTH_TIMEOUT_SECONDS = 8
 logger = logging.getLogger("uvicorn.error.resonance")
 
 
@@ -72,7 +74,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(
         title="Resonance Alert",
-        version="0.3.0",
+        version="0.4.0",
         docs_url=None,
         redoc_url=None,
         lifespan=lifespan,
@@ -80,9 +82,62 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = resolved
     app.state.db = database
     app.state.connections = manager
+    rate_limiters = {
+        "admin": TokenBucketRateLimiter(
+            resolved.admin_auth_failure_limit,
+            window_seconds=resolved.rate_limit_window_seconds,
+            max_clients=resolved.rate_limit_max_clients,
+        ),
+        "enrollment": TokenBucketRateLimiter(
+            resolved.enrollment_attempt_limit,
+            window_seconds=resolved.rate_limit_window_seconds,
+            max_clients=resolved.rate_limit_max_clients,
+        ),
+        "device_peer": TokenBucketRateLimiter(
+            resolved.device_peer_attempt_limit,
+            window_seconds=resolved.rate_limit_window_seconds,
+            max_clients=resolved.rate_limit_max_clients,
+        ),
+        "device_http": TokenBucketRateLimiter(
+            resolved.device_auth_attempt_limit,
+            window_seconds=resolved.rate_limit_window_seconds,
+            max_clients=resolved.rate_limit_max_clients,
+        ),
+        "device_websocket": TokenBucketRateLimiter(
+            resolved.device_auth_attempt_limit,
+            window_seconds=resolved.rate_limit_window_seconds,
+            max_clients=resolved.rate_limit_max_clients,
+        ),
+    }
+    app.state.rate_limiters = rate_limiters
 
     async def run_db(operation, *args, **kwargs):
         return await asyncio.to_thread(operation, *args, **kwargs)
+
+    def client_key(connection: Request | WebSocket, discriminator: str | None = None) -> str:
+        peer = connection.client.host if connection.client else "unknown"
+        return f"{peer}\x1f{discriminator}" if discriminator else peer
+
+    def reject_rate_limited(scope: str, decision: RateLimitDecision) -> None:
+        logger.warning(
+            "rate_limit_exceeded scope=%s retry_after_seconds=%s",
+            scope,
+            decision.retry_after_seconds,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many attempts. Try again later.",
+            headers={"Retry-After": str(decision.retry_after_seconds)},
+        )
+
+    def enforce_rate_limit(
+        scope: str,
+        connection: Request | WebSocket,
+        discriminator: str | None = None,
+    ) -> None:
+        decision = rate_limiters[scope].check(client_key(connection, discriminator))
+        if not decision.allowed:
+            reject_rate_limited(scope, decision)
 
     def parse_client_time(value: Any) -> int | None:
         return (
@@ -165,9 +220,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         return response
 
-    def require_admin(authorization: Annotated[str | None, Header()] = None) -> None:
+    def require_admin(
+        request: Request,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> None:
         scheme, _, supplied = (authorization or "").partition(" ")
         if scheme.lower() != "bearer" or not constant_time_equal(supplied, resolved.admin_token):
+            enforce_rate_limit("admin", request)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid admin token",
@@ -175,6 +234,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
 
     async def authenticate_device_headers(
+        request: Request,
         x_device_id: Annotated[str | None, Header()] = None,
         authorization: Annotated[str | None, Header()] = None,
     ) -> str:
@@ -182,8 +242,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if (
             not x_device_id
             or scheme.lower() != "bearer"
-            or not await run_db(database.authenticate_device, x_device_id, secret)
+            or not 1 <= len(x_device_id) <= 64
+            or not 1 <= len(secret) <= 128
         ):
+            enforce_rate_limit("device_peer", request)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid device credentials",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        enforce_rate_limit("device_peer", request)
+        enforce_rate_limit("device_http", request, x_device_id)
+        if not await run_db(database.authenticate_device, x_device_id, secret):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid device credentials",
@@ -218,7 +288,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"code": code, "expires_at": expires_at}
 
     @app.post("/api/devices/enroll", status_code=status.HTTP_201_CREATED)
-    async def enroll_device(payload: DeviceEnrollment) -> dict[str, str]:
+    async def enroll_device(request: Request, payload: DeviceEnrollment) -> dict[str, str]:
+        enforce_rate_limit("enrollment", request)
         device_id = str(uuid.uuid4())
         secret = generate_secret(32)
         clean_name = " ".join(payload.name.split())
@@ -464,7 +535,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await websocket.accept()
         device_id = ""
         try:
-            auth_message = await asyncio.wait_for(websocket.receive_json(), timeout=8)
+            decision = rate_limiters["device_peer"].check(client_key(websocket))
+            if not decision.allowed:
+                logger.warning(
+                    "rate_limit_exceeded scope=device_peer retry_after_seconds=%s",
+                    decision.retry_after_seconds,
+                )
+                await websocket.close(code=4429, reason="Too many connection attempts")
+                return
+            auth_message = await asyncio.wait_for(
+                websocket.receive_json(), timeout=WEBSOCKET_AUTH_TIMEOUT_SECONDS
+            )
             if not isinstance(auth_message, dict) or auth_message.get("type") != "auth":
                 await websocket.close(code=4401, reason="Authentication required")
                 return
@@ -480,6 +561,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 return
             device_id = raw_device_id
             device_secret = raw_device_secret
+            decision = rate_limiters["device_websocket"].check(client_key(websocket, device_id))
+            if not decision.allowed:
+                logger.warning(
+                    "rate_limit_exceeded scope=device_websocket retry_after_seconds=%s",
+                    decision.retry_after_seconds,
+                )
+                await websocket.close(code=4429, reason="Too many connection attempts")
+                return
             if not await run_db(database.authenticate_device, device_id, device_secret):
                 await websocket.close(code=4401, reason="Invalid device credentials")
                 return
@@ -580,7 +669,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             device_id,
                             receipt_status,
                         )
-        except (WebSocketDisconnect, asyncio.TimeoutError, ValueError):
+        except asyncio.TimeoutError:
+            try:
+                await asyncio.wait_for(
+                    websocket.close(code=4408, reason="Authentication timed out"),
+                    timeout=2,
+                )
+            except (TimeoutError, asyncio.TimeoutError, RuntimeError, OSError, WebSocketDisconnect):
+                pass
+        except (WebSocketDisconnect, ValueError):
             pass
         finally:
             if device_id:

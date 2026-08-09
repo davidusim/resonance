@@ -36,6 +36,7 @@ receiver browser ---- Web Audio clock ---- selected OS audio output
 5. Stop state is durable. A receiver reconnecting after a missed live stop receives a replayed stop before any pending prepare event.
 6. A receiver records stop tombstones locally, so a stop that arrives during download or decode prevents later scheduling.
 7. Receiver clocks use multiple startup samples and continue calibrating from heartbeat round trips.
+8. Sensitive authentication paths use process-local token buckets keyed by the ASGI peer address. Device paths combine a generous aggregate peer ceiling with stricter per-device buckets so many receivers can safely share one NAT address. Every bucket registry has a fixed maximum size and least-recently-used eviction.
 
 ## Data model
 
@@ -52,6 +53,8 @@ SQLite uses WAL mode. Each operation has its own connection, while multi-stateme
 ## Deployment constraint
 
 The connection registry is intentionally in process. Run exactly one coordinator process/replica. Multiple Uvicorn workers or replicas would split WebSocket receivers and require a shared fanout bus plus distributed presence tracking. SQLite is also a single-node data store; horizontal scale is not supported by this release.
+
+Rate-limit state is also process-local and resets on restart. It protects the coordinator from concentrated abuse but does not replace rate limiting at the trusted reverse proxy. Resonance never parses forwarded-address headers itself; configure Uvicorn's trusted proxy behavior so the ASGI client address is authoritative.
 
 ## Failure semantics
 
